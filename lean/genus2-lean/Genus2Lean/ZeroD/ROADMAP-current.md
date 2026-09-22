@@ -123,45 +123,63 @@ no draw is made on the reduce equation. So the matching regime only ever sees
 | `IndexCalculusHitRate` | **Superseded, this pass** — see correction (1) above. `hRate` made explicit as `HitRate F c` with sufficient conditions, but disconnected from the live proof graph: `IndexCalculusComplexity`'s actual result doesn't route through it. |
 | `HitRateSumsetReduction` | **Downstream of the superseded branch, this pass** — see correction (1) above. Content kept for reference: (1) NEGATIVE: no constant cap `matchCount T Δ ≤ K` at `Δ ≠ 0`. (2) POSITIVE: `matchCount ≤ 4·overlap(T+T)` under `SidonRepBound`. (3) `overlap(Δ) ≤ 2B²` unconditionally. (4)–(5) `goodMatch`/`DirectRelation`/`hbad` 3-piece split, `T`-piece proved, `T-T`/`T+T` pieces open — moot per the correction, not pursued further. |
 | `SidonDichotomyGeneral` | **Proved, `sorry`-free.** `sidonRepBound_of_sidonDichotomy_nonInvolution_general`: `SidonRepBound (sidonSet (principalDivisorData H hdeg) δ₀ F)` for the real `T = s(F)`, general `k`, from `hchar`/`hsf`/`AvoidsInvolutionPairs F`/`NoWeierstrassPoints F` only. Also carries `hitCount_ge_of_sidonDichotomy_nonInvolution_general`: `≥ B²/2` distinct relations, unconditional, real curve. **No longer purely stranded — this pass**, see `IndexCalculusComplexityRealHitCount` below. |
-| `IndexCalculusComplexityRealHitCount` | **New, this pass.** Chains `SidonDichotomyGeneral`'s `hitCount_ge_of_sidonDichotomy_nonInvolution_general` (`≥ B²/2` distinct relations, real curve, unconditional) into `IndexCalculusComplexity`'s balance point `B⁵=p²`: at that balance, the real curve's existence guarantee (`B²/2`) already covers the `~B` relations the model calls for, with room to spare. Settles, for the actual curve, the "which fiber-cap instantiation" question `IndexCalculusComplexity`'s own docstring had left as an unmade modeling choice. Does NOT close the reachability gap (below) — this is a static existence fact over the whole `B⁴`-quadruple space, not a statement about `N` solve attempts. |
+| `IndexCalculusComplexityRealHitCount` | Chains `SidonDichotomyGeneral`'s `hitCount_ge_of_sidonDichotomy_nonInvolution_general` (`≥ B²/2` distinct relations, real curve, unconditional) into `IndexCalculusComplexity`'s balance point `B⁵=p²`: at that balance, the real curve's existence guarantee (`B²/2`) already covers the `~B` relations the model calls for, with room to spare. Settles, for the actual curve, the "which fiber-cap instantiation" question `IndexCalculusComplexity`'s own docstring had left as an unmade modeling choice. Does NOT close the reachability gap — this is a static existence fact over the whole `B⁴`-quadruple space, not a statement about `N` solve attempts. |
+| `FiniteCouponCollector` | **`PMF`-free, generic finite-combinatorics coupon-collector bound** (ChatGPT consult this pass; corrected mid-pass after a pigeonhole conflict the consult caught — rate hypothesis is `k/d ≥ 1/(C·B²)`, not the pigeonhole-incompatible `1/(C·B)`). `sum_card_hit_ge`/`avg_seenCount_ge`: exact `𝔼[X_N] ≥ M(1-(1-k/d)^N)`-style bound over a literal `Fin N → R` seed space, no `PMF`/`MeasureTheory`. `pow_one_sub_le_one_div_one_add_mul`: elementary Bernoulli-style bound, proved by induction. `avg_seenCount_ge_half_sq_of_rate`: closed-form `B²/4` conclusion at `N ≥ C·B²`. Curve-independent, generic in label type `G`/seed type `R` — wiring to `H.Point`/`matchCount` NOT attempted here (that is item 1). |
+| `IndexCalculusReachabilityCouponCollector` | Connects `SolverReaches` to a coupon-collector bound directly at the `q`-level (per Claire: reuse `FiniteCouponCollector`'s Bernoulli *technique*, not its literal seed-space model — no second seed coordinate reifying the solver's internal randomness). Defines `avgSuccessProb`/`successProb` (crediting `¬goodMatch` free hits at probability `1`, sound since this can only inflate the bound). `expected_successes_at_least`/`solverReaches_coupon_collector_bound`: the `1 - 1/(1+N·avgQ)` asymptotic floor, REPL-tested. `occupancy_ge_half_of_rate`/`solverReaches_half_success_of_rate`: a clean fixed `≥ 1/2` threshold once `N` clears a rate floor `avgQ ≥ 1/(C·N)`. Leaves `avgQ`'s wiring to the real curve's `B⁴/(d·p²)`-scale value, and `d`'s wiring to `ZeroD/`'s degree bound, both explicitly NOT attempted — that remaining wiring is open item 1. |
+| `ZeroD/MatchCountFactorBaseBridge` | Closes open item 1's sub-gap (1a): connects `matchCount`/`SolverReaches`'s abstract `G := Jacobian H D` model to a REAL `H.Point` factor base. `pointMatchCount D δ₀ F₀ Δ` is the direct `H.Point`-level analogue of `matchCount`, stated against `GaugeOrbitSolutions`'s own defining equation (`GaugeOrbitMatchCountBound.lean`) restricted to a finite factor base. `matchCount_sidonSet_le_pointMatchCount`: `matchCount (sidonSet D δ₀ F₀) Δ ≤ pointMatchCount D δ₀ F₀ Δ`, proved by exhibiting `matchCount`'s counted set as literally the `.image` of `pointMatchCount`'s counted set under coordinatewise `s`, then `Finset.card_image_le` — deliberately an INEQUALITY, not an equality, since `s` is not claimed injective on a factor base (that is what `SidonBridge.lean`'s whole `AvoidsInvolutionPairs`/`NoWeierstrassPoints`/`SidonDichotomy` apparatus exists to control, not assumed here). Right-shaped for `SolverReaches`'s own use of `matchCount` as a lower bound on reachable mass. **REPL-confirmed green.** Does NOT wire `d`/`q` themselves — that is (1b), still open. |
 | `ZeroD/GaugeOrbitMatchCountBound` | earlier "gauge orbit = swapImages" claim was false; honest replacement: the `Δ`-fiber is a union over pair-sum classes of `≤4` fibers. |
 | `ZeroD/AlphaUnionGaugeCollapse` | any second sample with the same `α-α'` is gauge-accounted for by the reference `≤4` fiber. |
 
 ## Open, in order of importance
 
-1. **`IndexCalculusReachability`'s `SolverReaches` takes `|Sol Δ| ≤ d`.**
-   *(read, confirmed this pass — not actionable without new modeling
-   decisions.)* `matchCount`/`SolverReaches`/`Sol Δ` live in the abstract
-   group model (`G`/`Finset G`/`AverageComplexity.lean`); `Sol Δ` itself
-   is never a defined term anywhere, just prose motivating `SolverReaches`
-   as a hypothesis. `GaugeOrbitMatchCountBound`'s pair-sum-class
-   decomposition lives entirely at the `H.Point`/`Jacobian H D` level,
-   with no notion of a factor base `F` or per-solve probability `q` at
-   all. The two files share no common object to restate the bound in
-   terms of — bridging them means inventing new model glue (how factor-
-   base membership in `G` corresponds to pair-sum classes over
-   `H.Point`), not discharging an existing proof obligation. Left as is.
+1. **`IndexCalculusReachability`'s `SolverReaches` takes `|Sol Δ| ≤ d`, and
+   `avgQ`/`d` are not yet wired to `H.Point`/`Jacobian H D`.**
+   Two sub-gaps, not one, now that `IndexCalculusReachabilityCouponCollector.lean`
+   exists:
+   * (1a) **`matchCount`-side, bridged and REPL-confirmed green this pass**
+     — see the new `ZeroD/MatchCountFactorBaseBridge.lean` in the `Proved`
+     table below.
+     `sidonSet D δ₀ F₀` (`SidonBridge.lean`, already `matchCount`'s
+     `F : Finset (Jacobian H D)` argument in
+     `IndexCalculusComplexityRealHitCount.lean`) is now connected back to a
+     genuine `H.Point`-level quadruple count (`pointMatchCount`), with an
+     unconditional inequality `matchCount (sidonSet D δ₀ F₀) Δ ≤
+     pointMatchCount D δ₀ F₀ Δ` in the direction `SolverReaches` actually
+     needs (`matchCount` is used there as a lower bound on reachable mass,
+     so a possibly-larger `pointMatchCount` substitutes soundly). **What
+     this does NOT do**: it does not make the inequality an equality (`s`'s
+     non-injectivity on a real factor base is not controlled here — that
+     would need `AvoidsInvolutionPairs`/`NoWeierstrassPoints`/
+     `SidonDichotomy`, not attempted), and it does not yet plug `d`/`q`
+     into `SolverReaches` itself for an actual number — that is (1b).
+   * (1b) **Still open.** `d` (the `SolverReaches` degree bound) needs
+     `decoupledSystem_degree_uniform`'s `d := p ^ n` (`n` an arbitrary
+     placeholder exponent, `AlphaLocusDegreeUniform.lean`, itself
+     conditional on `GenericPeelChainHyp`, itself conditional on Step
+     3.1/3.2's still-open closed-form bound) — real, but a much weaker
+     `d` than the model wants, and `n`'s placeholder status means even a
+     successful wiring inherits an unpinned exponent. `q` itself (the
+     solver's actual per-`Δ` success probability, as opposed to the
+     `matchCount`/`pointMatchCount`-derived upper bound on how much mass
+     there is to find) is not constructed anywhere — `SolverReaches`
+     leaves it abstract by design, and nothing on file computes it for the
+     real solver.
 2. **Reachability/sampling gap: turning "relations exist" into "a solver
-   finds them."** `IndexCalculusComplexityRealHitCount` (new, this pass)
-   establishes that at the balance point `B⁵=p²`, at least `B²/2` distinct
-   relations genuinely exist for the real curve, unconditionally — matching
-   the `~B²` exponent the balance needs, not just the weaker unconditional
-   `~B` bound. What is NOT established: that `N ~ B²` solve *attempts* (a
-   randomized search over the whole group, one candidate returned per
-   attempt, checked afterward for factor-base membership) actually finds
-   `~B` of those relations. This is a coupon-collector-style claim needing
-   genuine expectation/probability machinery (indicator variables, linearity
-   of expectation) that nothing in this project has ever used — no `PMF`,
-   `MeasureTheory`, or `ProbabilityTheory` import anywhere in the codebase;
-   the project's existing "probability" results (`PaleyZygmund.lean`,
-   `HitRateSumsetReduction.lean`) are all finite-combinatorics second-moment
-   arguments in disguise, not measure-theoretic ones. **Sent to ChatGPT
-   this pass** for a scoping verdict: whether a finite-combinatorics
-   coupon-collector argument avoiding `PMF`/`MeasureTheory` entirely is
-   viable, or what minimal slice of Mathlib's probability API would be
-   needed, or whether a deterministic worst-case reformulation sidesteps
-   the need for expectation machinery altogether. Awaiting Claire's
-   response back from that consult before attempting any Lean.
+   finds them."** **Resolved at the modeling-threshold level, this pass**
+   (see "Proved" table): `IndexCalculusComplexityRealHitCount` established
+   the `~B²` existence guarantee; `FiniteCouponCollector` and
+   `IndexCalculusReachabilityCouponCollector` (new, this pass) turn that
+   into a `PMF`-free, finite-combinatorics coupon-collector bound, both at
+   the seed-space level and directly at `SolverReaches`'s own `q`-level,
+   landing on a clean `≥ 1/2` success-floor threshold
+   (`solverReaches_half_success_of_rate`) at a sufficient attempt budget
+   `N`. What remains is NOT the probability machinery (settled — no
+   `PMF`/`MeasureTheory` needed, per the ChatGPT consult) but wiring the
+   abstract rate floor `avgQ ≥ 1/(C·N)` these theorems take as a
+   hypothesis to an actual value for the real curve — i.e. this item is
+   now the same gap as item 1 (1a): a value for `avgQ` needs a value for
+   `matchCount F Δ` restricted to `goodMatch`, which needs `F` and `Δ`
+   wired to `H.Point`/`Jacobian H D` in the first place.
 
 *(Former item 2, "sampler must reject `P2 = ι P1`": resolved, this pass —
 `SampleTargetFromAlpha` now carries the non-involution fact as a required
@@ -220,3 +238,22 @@ constructor) — both REPL-confirmed green. Plus the new file
 `IndexCalculusComplexityRealHitCount` (chaining `SidonDichotomyGeneral`'s
 hit-count bound into `IndexCalculusComplexity`'s balance point),
 REPL-confirmed green.
+
+**Updated 2026-09-22 (2)**: `FiniteCouponCollector` (new, generic
+`PMF`-free coupon-collector bound) and `IndexCalculusReachabilityCouponCollector`
+(new, connects `SolverReaches` to that bound at the `q`-level) — both
+REPL-confirmed green except `occupancy_ge_half_of_rate`/
+`solverReaches_half_success_of_rate` in the latter, drafted this pass and
+not yet REPL-checked. Read together with `ROADMAP-current.md`'s own open
+item 2 (now folded into item 1, see above): the probability/expectation
+machinery is done; what remains is wiring `avgQ`/`d` to `H.Point`/
+`Jacobian H D`.
+
+**Updated 2026-09-22 (3)**: `ZeroD/MatchCountFactorBaseBridge` (closes open
+item 1's sub-gap (1a) — see the `Proved` table). **REPL-confirmed green**,
+one fix by hand (a trailing `rfl` in `sum_pointMatchCount_eq_card_pow_four`
+was unnecessary after the preceding `rw` already closed the goal — deleted).
+No new `sorry` introduced (the live-`sorry` inventory below is unaffected).
+Sub-gap (1b) — wiring `d`/`q` themselves to
+`decoupledSystem_degree_uniform`/an actual solver model — remains open, per
+item 1's updated text above.
