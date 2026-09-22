@@ -205,3 +205,4 @@ import Genus2Lean.IndexCalculusComplexityRealHitCount
 import Genus2Lean.FiniteCouponCollector
 import Genus2Lean.IndexCalculusReachabilityCouponCollector
 import Genus2Lean.MatchCountFactorBaseBridge
+import Genus2Lean.PointMatchCountFactorBaseCap
