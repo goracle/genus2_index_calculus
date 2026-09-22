@@ -190,3 +190,75 @@ theorem sum_card_hit_ge
         rw [Finset.sum_const, smul_eq_mul, mul_comm]
     _ ≤ ∑ Δ ∈ H, (univ.filter (fun ω : Fin N → R => ∃ i, r (ω i) = some Δ)).card :=
         Finset.sum_le_sum hper
+
+/-- **Averaged form of `sum_card_hit_ge`**, dividing through by `d^N =
+Fintype.card (Fin N → R)`: the AVERAGE, over all `N`-seed-tuples `ω`, of the
+number of `H`-labels seen at least once is at least `M · (1 - (1 - k/d)^N)`
+— the real-valued form of the consult's `𝔼[X_N] ≥ M(1-(1-k/d)^N)` (eq
+(1)/(2)), now genuinely an average (division by the total tuple count
+`d^N`), not just an unnormalized `ℕ`-mass bound. This is the shape needed
+once `k`, `d`, `H` are wired to an actual sampler: `M` becomes the number of
+reachable factor-base targets, `d^N` the total attempt-space, and the RHS
+is the expected count of distinct relations found in `N` attempts. Wiring
+is deliberately still not attempted here (see the module docstring); this
+is the generic real-number restatement the wiring will need to state its
+conclusion in, once available.
+
+Needs `k ≤ Fintype.card R`: without it the ℕ-subtraction `d - k` inside
+`sum_card_hit_ge` truncates at `0` rather than going negative, breaking the
+real-number identity `(d-k)^N = d^N - ... ` this theorem needs verbatim.
+This is a mild, always-satisfiable side condition in practice (`k` is a
+lower bound on a single label's producing-seed count, itself at most `d`,
+the total seed count), not a new mathematical assumption. -/
+theorem avg_seenCount_ge
+    (r : R → Option G) (H : Finset G) (N k : ℕ) (hd : 0 < Fintype.card R)
+    (hkd : k ≤ Fintype.card R)
+    (hk : ∀ Δ ∈ H, k ≤ (univ.filter (fun x : R => r x = some Δ)).card) :
+    (H.card : ℝ) * (1 - (1 - (k : ℝ) / (Fintype.card R : ℝ)) ^ N) ≤
+      (∑ ω : Fin N → R,
+        (H.filter (fun Δ => ∃ i, r (ω i) = some Δ)).card : ℝ) /
+        (Fintype.card R : ℝ) ^ N := by
+  have hdR : (0 : ℝ) < (Fintype.card R : ℝ) := by exact_mod_cast hd
+  have hdRpow : (0 : ℝ) < (Fintype.card R : ℝ) ^ N := by positivity
+  have hnat := sum_card_hit_ge r H N k hk
+  -- Cast the ℕ-inequality to ℝ, converting the truncated ℕ-subtraction
+  -- `Fintype.card R - k` into genuine real subtraction via `Nat.cast_sub hkd`.
+  have hnatR : (H.card : ℝ) * ((Fintype.card R : ℝ) ^ N - ((Fintype.card R : ℝ) - (k : ℝ)) ^ N) ≤
+      (∑ ω : Fin N → R,
+        (H.filter (fun Δ => ∃ i, r (ω i) = some Δ)).card : ℝ) := by
+    have hcast : ((Fintype.card R - k : ℕ) : ℝ) = (Fintype.card R : ℝ) - (k : ℝ) :=
+      Nat.cast_sub hkd
+    have hle_pow : (Fintype.card R - k) ^ N ≤ Fintype.card R ^ N :=
+      Nat.pow_le_pow_left (by omega) N
+    calc (H.card : ℝ) * ((Fintype.card R : ℝ) ^ N - ((Fintype.card R : ℝ) - (k : ℝ)) ^ N)
+        = (H.card : ℝ) * ((Fintype.card R : ℝ) ^ N - ((Fintype.card R - k : ℕ) : ℝ) ^ N) := by
+          rw [hcast]
+      _ = (H.card : ℝ) * (((Fintype.card R ^ N : ℕ) : ℝ) - (((Fintype.card R - k) ^ N : ℕ) : ℝ)) := by
+          push_cast; ring
+      _ = ((H.card * (Fintype.card R ^ N - (Fintype.card R - k) ^ N) : ℕ) : ℝ) := by
+          rw [Nat.cast_mul, Nat.cast_sub hle_pow]
+          try push_cast
+          try ring
+      _ ≤ (∑ ω : Fin N → R,
+            (H.filter (fun Δ => ∃ i, r (ω i) = some Δ)).card : ℝ) := by
+          exact_mod_cast hnat
+  -- Divide through by `d^N > 0`; rewrite the LHS factor `(1 - k/d)^N` to
+  -- match `((d - k)/d)^N`, which is exactly `(d-k)^N / d^N` by `div_pow`.
+  have hkey : (H.card : ℝ) * (1 - (1 - (k : ℝ) / (Fintype.card R : ℝ)) ^ N) *
+      (Fintype.card R : ℝ) ^ N ≤
+      (∑ ω : Fin N → R,
+        (H.filter (fun Δ => ∃ i, r (ω i) = some Δ)).card : ℝ) := by
+    have hrw : (H.card : ℝ) * (1 - (1 - (k : ℝ) / (Fintype.card R : ℝ)) ^ N) *
+        (Fintype.card R : ℝ) ^ N =
+        (H.card : ℝ) * ((Fintype.card R : ℝ) ^ N - ((Fintype.card R : ℝ) - (k : ℝ)) ^ N) := by
+      have hdne : (Fintype.card R : ℝ) ≠ 0 := hdR.ne'
+      have hone : (1 : ℝ) - (k : ℝ) / (Fintype.card R : ℝ) =
+          ((Fintype.card R : ℝ) - (k : ℝ)) / (Fintype.card R : ℝ) := by
+        field_simp
+      rw [hone, div_pow]
+      field_simp
+      try ring
+    rw [hrw]
+    exact hnatR
+  rw [le_div_iff₀ hdRpow]
+  exact hkey
