@@ -77,6 +77,16 @@ model here proves anything about how large that free-relation mass is.)
   "probability" (in this file's finite-combinatorics-flavored sense, matching
   the rest of the project's non-measure-theoretic treatment of expectation) at
   least `1 - 1/(1+N·avgQ)`, which `→ 1` as `N·avgQ → ∞`.
+* `solverReaches_coupon_collector_bound` — the above assembled directly from
+  `SolverReaches`, no new hypothesis beyond `hq1` (probabilities `≤ 1`).
+* `occupancy_ge_half_of_rate` / `solverReaches_half_success_of_rate` — **this
+  pass's addition, closing the asymptotic gap flagged in the previous
+  version's docstring**: the `1-1/(1+N·avgQ)` shape only tends to `1` in the
+  limit; these give a clean fixed threshold `≥ 1/2` once `N` meets a rate
+  floor `avgQ ≥ 1/(C·N)` for some `C ∈ (0,1]` — the direct `q`-level analogue
+  of `FiniteCouponCollector.lean`'s `avg_seenCount_ge_half_sq_of_rate`, minus
+  that theorem's seed-space/pigeonhole scaffolding (`avgQ` is already the
+  single quantity of interest here, no `B`/`k`/`d`/`H` decomposition needed).
 
 ## What this does NOT prove
 
@@ -102,17 +112,35 @@ model here proves anything about how large that free-relation mass is.)
   both still hypotheses/modeling choices, not derived facts — exactly as
   `IndexCalculusReachability.lean`'s own "What is NOT proved here" section
   already states for `SolverReaches`.
+* Wiring `avgQ` to the real curve's actual `B⁴/(d·p²)`-scale value (the
+  remaining half of `ROADMAP-current.md`'s open item 1) and wiring `d` itself
+  to `ZeroD/`'s degree bound (open item 2) — `occupancy_ge_half_of_rate`'s
+  rate hypothesis `avgQ ≥ 1/(C·N)` is left abstract, exactly as `avgQ` and
+  `d` were already left abstract by `SolverReaches` itself; this file supplies
+  the threshold those two wirings will need to clear, not the wirings.
 
 ## Verification status
 
-REPL-tested (Claire). One round of fixes this pass: two `Finset.sum_const`
-rewrites originally used `smul_eq_mul` (correct for a `ℕ`-valued sum, the
-in-project precedent this file copied the idiom from — e.g.
-`HitRateSumsetReduction.lean`'s `sum_matchCount_T_le`), but both sums here
-are `ℝ`-valued (a real constant summed over a `Finset G`), so the resulting
-`card • (x : ℝ)` is heterogeneous `ℕ`-nsmul, not the homogeneous smul
-`smul_eq_mul` targets. Fixed to `nsmul_eq_mul` at both sites
-(`avgSuccessProb_le_one`, `solverReaches_coupon_collector_bound`).
+`avgSuccessProb`/`successProb`/`avgSuccessProb_ge_goodMatch_avg`/
+`avgSuccessProb_nonneg`/`avgSuccessProb_le_one`/`expected_zero_success_le`/
+`expected_successes_at_least`/`solverReaches_coupon_collector_bound`/
+`avgQ_mem_Icc`: REPL-tested (Claire). One round of fixes in that pass: two
+`Finset.sum_const` rewrites originally used `smul_eq_mul` (correct for a
+`ℕ`-valued sum, the in-project precedent this file copied the idiom from —
+e.g. `HitRateSumsetReduction.lean`'s `sum_matchCount_T_le`), but both sums
+here are `ℝ`-valued (a real constant summed over a `Finset G`), so the
+resulting `card • (x : ℝ)` is heterogeneous `ℕ`-nsmul, not the homogeneous
+smul `smul_eq_mul` targets. Fixed to `nsmul_eq_mul` at both sites.
+
+`occupancy_ge_half_of_rate`/`solverReaches_half_success_of_rate`: **drafted
+without a Lean toolchain, this pass — NOT yet `lake build`-checked.** Same
+proof shape as `FiniteCouponCollector.lean`'s already-REPL-confirmed
+`avg_seenCount_ge_half_sq_of_rate` `hoccupancy_half` step, and the two
+`avgQ`-bound derivations were factored into `avgQ_mem_Icc` (already
+REPL-tested, unchanged from `solverReaches_coupon_collector_bound`'s own
+proof) rather than re-derived, so the only genuinely new algebra is
+`occupancy_ge_half_of_rate`'s `hdenom_ge`/`hfrac_le_half` block — worth a
+close look on the next REPL pass.
 -/
 
 open Finset
@@ -260,34 +288,29 @@ measure-theoretic one — see module docstring) at least
 `avgSuccessProb F q`. This is the file's main theorem: it needs no new
 hypothesis beyond what `SolverReaches`/`expected_successes_ge` already carry,
 plus `hq1` (probabilities are `≤ 1`, not previously needed by
-`IndexCalculusReachability.lean` since it never had to bound `q` above). -/
-theorem solverReaches_coupon_collector_bound
-    (F : Finset G) (d : ℕ) (hd : 0 < d) (q : G → ℝ)
-    (hq0 : ∀ Δ : G, 0 ≤ q Δ) (hq1 : ∀ Δ : G, q Δ ≤ 1)
-    (hreach : SolverReaches F d q) (N : ℕ) :
-    1 - 1 / (1 + (N : ℝ) *
-        ((∑ Δ ∈ Finset.univ.filter (goodMatch F), (matchCount F Δ : ℝ)) /
-          ((d : ℝ) * (Fintype.card G : ℝ)))) ≤
-      1 - (1 -
-        ((∑ Δ ∈ Finset.univ.filter (goodMatch F), (matchCount F Δ : ℝ)) /
-          ((d : ℝ) * (Fintype.card G : ℝ)))) ^ N := by
-  set avgQ : ℝ :=
+`IndexCalculusReachability.lean` since it never had to bound `q` above). 
+
+ **`avgQ` (the `goodMatch`-mass average) lies in `[0,1]`.** Shared
+bounds-derivation used by both `solverReaches_coupon_collector_bound` and
+`solverReaches_half_success_of_rate` below, factored out so the two proofs
+don't duplicate this step. `0 ≤` is immediate (nonneg sum over nonneg
+denominator); `≤ 1` uses `SolverReaches` and `hq1` directly:
+`matchCount F Δ ≤ d·q Δ ≤ d` termwise on `goodMatch F`, so the sum is at
+most `d·|goodMatch F| ≤ d·|G|`, the exact denominator. -/
+theorem avgQ_mem_Icc (F : Finset G) (d : ℕ) (hd : 0 < d) (q : G → ℝ)
+    (hq1 : ∀ Δ : G, q Δ ≤ 1) (hreach : SolverReaches F d q) :
+    0 ≤ (∑ Δ ∈ Finset.univ.filter (goodMatch F), (matchCount F Δ : ℝ)) /
+          ((d : ℝ) * (Fintype.card G : ℝ)) ∧
     (∑ Δ ∈ Finset.univ.filter (goodMatch F), (matchCount F Δ : ℝ)) /
-      ((d : ℝ) * (Fintype.card G : ℝ)) with havgQdef
+          ((d : ℝ) * (Fintype.card G : ℝ)) ≤ 1 := by
   have hNpos : 0 < Fintype.card G := Fintype.card_pos_iff.mpr ⟨0⟩
   have hN : (0 : ℝ) < (Fintype.card G : ℝ) := by exact_mod_cast hNpos
   have hdR : (0 : ℝ) < (d : ℝ) := by exact_mod_cast hd
-  have havgQ0 : 0 ≤ avgQ := by
-    rw [havgQdef]
-    apply div_nonneg
+  refine ⟨?_, ?_⟩
+  · apply div_nonneg
     · exact Finset.sum_nonneg (fun Δ _ => by positivity)
     · positivity
-  -- `avgQ ≤ expected_successes_ge`'s RHS `(∑ q)/|G|`, which is `≤ 1` by
-  -- `avgSuccessProb_le_one`/`avgSuccessProb_nonneg` composed with
-  -- `avgSuccessProb_ge_goodMatch_avg` — but the cleanest route is direct:
-  -- `matchCount F Δ ≤ d * q Δ ≤ d`, so `avgQ ≤ (d·|goodMatch|)/(d·|G|) ≤ 1`.
-  have havgQ1 : avgQ ≤ 1 := by
-    rw [havgQdef, div_le_one (by positivity)]
+  · rw [div_le_one (by positivity)]
     have hsum_le : ∑ Δ ∈ Finset.univ.filter (goodMatch F), (matchCount F Δ : ℝ) ≤
         ∑ Δ ∈ Finset.univ.filter (goodMatch F), (d : ℝ) := by
       apply Finset.sum_le_sum
@@ -309,4 +332,96 @@ theorem solverReaches_coupon_collector_bound
               _ = Fintype.card G := Finset.card_univ
           exact_mod_cast this
       _ = (d : ℝ) * (Fintype.card G : ℝ) := mul_comm _ _
-  exact expected_successes_at_least avgQ havgQ0 havgQ1 N
+
+theorem solverReaches_coupon_collector_bound
+    (F : Finset G) (d : ℕ) (hd : 0 < d) (q : G → ℝ)
+    (hq0 : ∀ Δ : G, 0 ≤ q Δ) (hq1 : ∀ Δ : G, q Δ ≤ 1)
+    (hreach : SolverReaches F d q) (N : ℕ) :
+    1 - 1 / (1 + (N : ℝ) *
+        ((∑ Δ ∈ Finset.univ.filter (goodMatch F), (matchCount F Δ : ℝ)) /
+          ((d : ℝ) * (Fintype.card G : ℝ)))) ≤
+      1 - (1 -
+        ((∑ Δ ∈ Finset.univ.filter (goodMatch F), (matchCount F Δ : ℝ)) /
+          ((d : ℝ) * (Fintype.card G : ℝ)))) ^ N := by
+  obtain ⟨havgQ0, havgQ1⟩ := avgQ_mem_Icc F d hd q hq1 hreach
+  exact expected_successes_at_least _ havgQ0 havgQ1 N
+
+/-! ## Closing the asymptotic gap: a clean `≥ 1/2` threshold
+
+`solverReaches_coupon_collector_bound` gives `1 - 1/(1+N·avgQ)` as the
+success floor for `N` attempts — correct but not yet in the "large `N`
+clears a fixed threshold" shape `FiniteCouponCollector.lean`'s own
+`avg_seenCount_ge_half_sq_of_rate` reached for the seed-space model. This
+section proves the exact analogue at the `q`-level: once `N` is large enough
+relative to a rate floor on `avgQ`, the success floor clears `1/2`.
+
+Simpler than `avg_seenCount_ge_half_sq_of_rate`: there `k/d` first had to be
+bounded via a pigeonhole argument against `|H|` before the rate hypothesis
+made sense (hence that theorem's `B`, `C`, `hM`, `hkd` machinery). Here
+`avgQ` is already the single real quantity of interest — no seed-count
+pigeonhole, no `|H|` — so only the Bernoulli-threshold step survives,
+stated directly against an abstract rate hypothesis `avgQ ≥ 1/(C·N)`. -/
+
+/-- **The Bernoulli threshold, at the `avgQ`-level.** If `avgQ ≥ 1/(C·N)`
+(`C > 0`, i.e. `N` attempts already meet a `1/C`-fraction-of-`1/avgQ` rate
+floor) then `N·avgQ ≥ 1/C`, and `1/(1+N·avgQ) ≤ 1/2` once `C ≤ 1`
+(`1+N·avgQ ≥ 1+1/C ≥ 2`). Pure algebra on `expected_zero_success_le`'s
+conclusion — no new combinatorial content, same shape as
+`avg_seenCount_ge_half_sq_of_rate`'s own `hoccupancy_half` step, restated
+without that theorem's `B`/`k`/`d`/`H` scaffolding since `avgQ` is already
+the quantity of interest here. -/
+theorem occupancy_ge_half_of_rate
+    (avgQ C : ℝ) (havgQ0 : 0 ≤ avgQ) (havgQ1 : avgQ ≤ 1) (hC0 : 0 < C) (hC1 : C ≤ 1)
+    (N : ℕ) (hrate : 1 / (C * (N : ℝ)) ≤ avgQ) (hNpos : 0 < N) :
+    (1 : ℝ) / 2 ≤ 1 - (1 - avgQ) ^ N := by
+  have hNR : (0:ℝ) < (N : ℝ) := by exact_mod_cast hNpos
+  have hCN_pos : (0:ℝ) < C * (N : ℝ) := by positivity
+  have hbernoulli := expected_zero_success_le avgQ havgQ0 havgQ1 N
+  have hdenom_ge : (2:ℝ) ≤ 1 + (N : ℝ) * avgQ := by
+    have h1 : (1:ℝ) / C ≤ (N : ℝ) * avgQ := by
+      have h2 : (N : ℝ) * (1 / (C * (N : ℝ))) ≤ (N : ℝ) * avgQ :=
+        mul_le_mul_of_nonneg_left hrate hNR.le
+      have h3 : (N : ℝ) * (1 / (C * (N : ℝ))) = 1 / C := by
+        have hCne : C ≠ 0 := ne_of_gt hC0
+        have hNne : (N : ℝ) ≠ 0 := ne_of_gt hNR
+        field_simp
+      rw [h3] at h2
+      exact h2
+    have h4 : (1:ℝ) ≤ 1 / C := by
+      rw [le_div_iff₀ hC0]
+      linarith
+    linarith
+  have hdenom_pos : (0:ℝ) < 1 + (N : ℝ) * avgQ := by linarith
+  have hfrac_le_half : 1 / (1 + (N : ℝ) * avgQ) ≤ 1 / 2 := by
+    rw [div_le_div_iff₀ hdenom_pos (by norm_num : (0:ℝ) < 2)]
+    nlinarith
+  linarith [hbernoulli, hfrac_le_half]
+
+/-- **Assembled: `SolverReaches` clears success probability `1/2` at a
+sufficient budget `N`.** Combines `solverReaches_coupon_collector_bound`'s
+floor with `occupancy_ge_half_of_rate`: given `SolverReaches F d q`, `C ∈
+(0,1]`, and a budget `N` meeting the rate floor `avgQ ≥ 1/(C·N)` (where
+`avgQ := (∑_{goodMatch F} matchCount F Δ)/(d·|G|)` is exactly the same
+quantity `expected_successes_ge`/`SolverReaches` already produce), `N`
+attempts find a relation with success floor at least `1/2`. This is the
+`q`-level analogue of `avg_seenCount_ge_half_sq_of_rate`
+(`FiniteCouponCollector.lean`): a clean, fixed threshold rather than the
+`1-1/(1+N·avgQ)` shape that only tends to `1` in the limit. Wiring `avgQ`
+itself to the real curve's `B⁴/(d·p²)`-scale value (closing open item 1's
+remaining gap, per `ROADMAP-current.md`) and to `d`'s actual value (open
+item 2) is NOT attempted here — this is the generic threshold statement
+those two wirings will need to clear, once available. -/
+theorem solverReaches_half_success_of_rate
+    (F : Finset G) (d : ℕ) (hd : 0 < d) (q : G → ℝ)
+    (hq0 : ∀ Δ : G, 0 ≤ q Δ) (hq1 : ∀ Δ : G, q Δ ≤ 1)
+    (hreach : SolverReaches F d q) (C : ℝ) (hC0 : 0 < C) (hC1 : C ≤ 1)
+    (N : ℕ) (hNpos : 0 < N)
+    (hrate : 1 / (C * (N : ℝ)) ≤
+      (∑ Δ ∈ Finset.univ.filter (goodMatch F), (matchCount F Δ : ℝ)) /
+        ((d : ℝ) * (Fintype.card G : ℝ))) :
+    (1 : ℝ) / 2 ≤
+      1 - (1 -
+        ((∑ Δ ∈ Finset.univ.filter (goodMatch F), (matchCount F Δ : ℝ)) /
+          ((d : ℝ) * (Fintype.card G : ℝ)))) ^ N := by
+  obtain ⟨havgQ0, havgQ1⟩ := avgQ_mem_Icc F d hd q hq1 hreach
+  exact occupancy_ge_half_of_rate _ C havgQ0 havgQ1 hC0 hC1 N hrate hNpos
