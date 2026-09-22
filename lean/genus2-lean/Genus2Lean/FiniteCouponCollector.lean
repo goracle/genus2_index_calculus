@@ -68,13 +68,16 @@ for it now — this file follows that recommendation.
 
 ## What is explicitly NOT proved here (left for whoever wires this up)
 
-* The consult §2 asymptotic reduction itself: turning `1-(1-k/d)^N` into a
-  clean `Θ(1/B)` factor given `d = O(B³)` and `N ≍ B²` needs an actual
-  analytic inequality (Bernoulli's `(1-x)^N ≤ 1/(1+Nx)`, or `1-x ≤ e^{-x}`
-  plus `Real.exp` machinery) — genuinely more work than algebra alone, not
-  attempted here; an earlier draft of `avg_seenCount_ge_of_balance` briefly
-  carried unused `d ≤ C·B³`/`N`-scale hypotheses that implied this reduction
-  without actually proving it — corrected to only claim what is proved.
+* ~~The consult §2 asymptotic reduction itself~~ — **now proved**, this
+  pass: `pow_one_sub_le_one_div_one_add_mul` (elementary Bernoulli-style
+  bound, induction, no `Real.exp`) plus `avg_seenCount_ge_half_sq_of_rate`
+  (the closed-form `B²/4` conclusion at `N ≥ C·B²` attempts). The rate
+  hypothesis needed correcting from an initial `k/d ≥ 1/(C·B)` draft to
+  `k/d ≥ 1/(C·B²)` — the former was pigeonhole-incompatible with
+  `|H| ≥ B²/2` at large `B` (a uniform per-label floor `k` across `|H|`
+  labels forces `k/d ≤ 1/|H| ≤ 2/B²`, contradicting `k/d ≥ 1/(C·B)` once
+  `B > 2C`); caught by a ChatGPT consult this pass. `N ≥ C·B²` (not `C·B`)
+  is the correspondingly corrected attempt count.
 * The variance/Chebyshev high-probability strengthening (consult §3) —
   noted as available, not built, since the expectation-level bound alone
   already matches what `IndexCalculusComplexity.lean`'s balance needs
@@ -366,43 +369,42 @@ theorem pow_one_sub_le_one_div_one_add_mul (x : ℝ) (hx0 : 0 ≤ x) (hx1 : x �
     rw [hcast]
     exact le_trans hstep1 hstep2
 
-/-- **The consult's §2 asymptotic reduction, finished.** Combining
-`avg_seenCount_ge_of_balance` with `pow_one_sub_le_one_div_one_add_mul`:
-given `k/d ≥ 1/(C·B)` (the consult's `d = O(B³)` case, rewritten as a lower
-bound on the per-seed rate `k/d` in terms of `B` — see the docstring below
-for exactly how this matches consult §2's arithmetic) and `N` solves, the
-occupancy factor is bounded below by `N/(C·B) / (1 + N/(C·B))`, which is
-`≥ 1/2` once `N ≥ C·B` — giving the clean statement: **at `N ≥ C·B`
-attempts, the expected distinct-hit count is at least `B²/4`.**
+/-- **The consult's §2 asymptotic reduction, corrected this pass.**
 
-This is the theorem the module docstring's "What is explicitly NOT proved
-here" section (as of the previous pass) flagged as missing — the analytic
-step from `1-(1-k/d)^N` to a genuine closed-form bound, via
-`pow_one_sub_le_one_div_one_add_mul` above, elementary and self-contained
-(no `Real.exp`, matching the rest of the file's style).
+**Why the previous version of this theorem was a dead end, not just a bug**:
+an earlier draft paired `hM : B²/2 ≤ |H|` with a rate hypothesis
+`k/d ≥ 1/(C·B)`, applied via `hk : ∀ Δ ∈ H, k ≤ #{seeds → Δ}` (a UNIFORM
+per-label floor: the SAME `k` bounds the seed-count for every `Δ ∈ H`
+simultaneously). Since `r : R → Option G` is a function, each seed
+produces at most one label, so `∑_{Δ∈H} k ≤ ∑_{Δ∈H} #{seeds→Δ} ≤ d`
+(disjoint fibers), forcing `k/d ≤ 1/|H| ≤ 2/B²` by pigeonhole. Combined
+with `hrate : k/d ≥ 1/(C·B)`, that forces `B ≤ 2C` — for any FIXED `C`,
+this fails once `B` grows, which is exactly the asymptotic regime
+(`B⁵ = p²`, `B → ∞` as `p → ∞`) this whole line of work targets. The
+theorem wasn't false (Lean checked it), just unsatisfiable at the scale
+it was needed for — a ChatGPT consult this pass caught the mismatch.
 
-**Note on the target exponent**: consult §2's own arithmetic (`d=O(B³)`,
-`N≍B²` ⟹ `Θ(B)`) is reproduced here in a cleaner but equivalent form: taking
-`k/d ≥ 1/(C·B)` directly (rather than separately bounding `k≥1` and
-`d≤C·B³`) folds the same `B³/B²=B`-scale relationship into one hypothesis,
-and `N ≥ C·B` (linear in `B`, not `B²`) already suffices for the `≥1/2`
-occupancy floor — a sharper conclusion than the consult's back-of-envelope
-`N≍B²`, because the elementary Bernoulli-style bound proved here is tight
-enough not to need the extra slack. Callers instantiating with the
-project's actual `d≤C·B³` bound and `k≥1` should derive `k/d ≥ 1/(C·B³)`
-(NOT `1/(C·B)`) from those two facts, giving a WEAKER hypothesis here and
-correspondingly needing `N ≥ C·B³` (not `C·B`) for the same conclusion —
-stated with the abstract `k/d` bound directly so callers can supply
-whichever concrete rate their model actually provides, rather than this
-theorem silently assuming the more optimistic `d=O(B)` case. -/
+**The fix**: keep `hM : B²/2 ≤ |H|` (this matches
+`IndexCalculusComplexityRealHitCount`'s real, unconditional existence
+bound), but correct the rate to the one pigeonhole actually allows at
+that `|H|`-scale: `k/d ≥ 1/(C·B²)`, NOT `1/(C·B)` — off by exactly the
+factor of `B` that made the old version unsatisfiable. At this corrected
+rate, `k ~ B` and `d ~ C·B²·k ~ B³` (matching the project's own
+`d = O(B³)` reachability-cap reading), so `k/d ~ 1/B²` is consistent with
+the pigeonhole ceiling `1/|H| ~ 2/B²` — no contradiction. The occupancy
+floor from `pow_one_sub_le_one_div_one_add_mul` then needs `N ≥ C·B²`
+(not `C·B`) attempts to clear `1/2`, matching the project's own `N ≍ B²`
+target and ChatGPT's independently-derived `Θ(B)`-expected-hits scale
+exactly. Conclusion is `B²/4`, same target as before — only the rate/`N`
+hypotheses changed to ones that are actually jointly satisfiable. -/
 theorem avg_seenCount_ge_half_sq_of_rate
     (r : R → Option G) (H : Finset G) (B C : ℝ) (N k : ℕ)
     (hB : 2 ≤ B) (hC : 0 < C)
     (hd_pos : 0 < Fintype.card R)
     (hkd : k ≤ Fintype.card R)
     (hM : B ^ 2 / 2 ≤ (H.card : ℝ))
-    (hrate : 1 / (C * B) ≤ (k : ℝ) / (Fintype.card R : ℝ))
-    (hN : C * B ≤ (N : ℝ))
+    (hrate : 1 / (C * B ^ 2) ≤ (k : ℝ) / (Fintype.card R : ℝ))
+    (hN : C * B ^ 2 ≤ (N : ℝ))
     (hk : ∀ Δ ∈ H, k ≤ (univ.filter (fun x : R => r x = some Δ)).card) :
     (B ^ 2) / 4 ≤
       (∑ ω : Fin N → R,
@@ -410,36 +412,36 @@ theorem avg_seenCount_ge_half_sq_of_rate
         (Fintype.card R : ℝ) ^ N := by
   have hd : 0 < Fintype.card R := hd_pos
   have hbase := avg_seenCount_ge_of_balance r H B N k hB hd hkd hM hk
-  have hCB_pos : (0:ℝ) < C * B := by positivity
+  have hBsq_pos : (0:ℝ) < B ^ 2 := by positivity
+  have hCB_pos : (0:ℝ) < C * B ^ 2 := by positivity
   have hkdR_nonneg : (0:ℝ) ≤ (k : ℝ) / (Fintype.card R : ℝ) := by positivity
   have hkdR_le1 : (k : ℝ) / (Fintype.card R : ℝ) ≤ 1 := by
     have hdR : (0:ℝ) < (Fintype.card R : ℝ) := by exact_mod_cast hd
     rw [div_le_one hdR]
     exact_mod_cast hkd
-  -- Step 1: (1 - k/d)^N ≤ (1 - 1/(C*B))^N, since k/d ≥ 1/(C*B) and 1-x is
-  -- decreasing in x. Then bound (1 - 1/(C*B))^N via the elementary lemma.
-  -- `1/(C*B) ≤ 1` is NOT derivable from `hB`/`hC` alone (e.g. C tiny, B=2
-  -- gives C*B < 1) — it follows instead by chaining through `hrate` and
-  -- `hkdR_le1`: `1/(C*B) ≤ k/d ≤ 1`.
-  have hCB_le1 : 1 / (C * B) ≤ 1 := le_trans hrate hkdR_le1
-  have hmono : (1 - (k : ℝ) / (Fintype.card R : ℝ)) ^ N ≤ (1 - 1 / (C * B)) ^ N := by
+  -- Step 1: (1 - k/d)^N ≤ (1 - 1/(C*B²))^N, since k/d ≥ 1/(C*B²) and 1-x is
+  -- decreasing in x. Then bound (1 - 1/(C*B²))^N via the elementary lemma.
+  -- `1/(C*B²) ≤ 1` follows by chaining through `hrate` and `hkdR_le1`:
+  -- `1/(C*B²) ≤ k/d ≤ 1`.
+  have hCB_le1 : 1 / (C * B ^ 2) ≤ 1 := le_trans hrate hkdR_le1
+  have hmono : (1 - (k : ℝ) / (Fintype.card R : ℝ)) ^ N ≤ (1 - 1 / (C * B ^ 2)) ^ N := by
     have h1 : (0:ℝ) ≤ 1 - (k : ℝ) / (Fintype.card R : ℝ) := by linarith
-    have h2 : (1 - (k : ℝ) / (Fintype.card R : ℝ)) ≤ (1 - 1 / (C * B)) := by linarith
+    have h2 : (1 - (k : ℝ) / (Fintype.card R : ℝ)) ≤ (1 - 1 / (C * B ^ 2)) := by linarith
     exact pow_le_pow_left₀ h1 h2 N
-  have hbernoulli := pow_one_sub_le_one_div_one_add_mul (1 / (C * B))
+  have hbernoulli := pow_one_sub_le_one_div_one_add_mul (1 / (C * B ^ 2))
     (by positivity) hCB_le1 N
-  have hNCB : (N : ℝ) * (1 / (C * B)) = (N : ℝ) / (C * B) := by ring
+  have hNCB : (N : ℝ) * (1 / (C * B ^ 2)) = (N : ℝ) / (C * B ^ 2) := by ring
   have hoccupancy_half : (1:ℝ) / 2 ≤ 1 - (1 - (k : ℝ) / (Fintype.card R : ℝ)) ^ N := by
     have hchain : (1 - (k : ℝ) / (Fintype.card R : ℝ)) ^ N ≤
-        1 / (1 + (N : ℝ) * (1 / (C * B))) := le_trans hmono hbernoulli
+        1 / (1 + (N : ℝ) * (1 / (C * B ^ 2))) := le_trans hmono hbernoulli
     rw [hNCB] at hchain
-    have hdenom_ge : (2:ℝ) ≤ 1 + (N : ℝ) / (C * B) := by
-      have : (1:ℝ) ≤ (N : ℝ) / (C * B) := by
+    have hdenom_ge : (2:ℝ) ≤ 1 + (N : ℝ) / (C * B ^ 2) := by
+      have : (1:ℝ) ≤ (N : ℝ) / (C * B ^ 2) := by
         rw [le_div_iff₀ hCB_pos]
         linarith
       linarith
-    have hdenom_pos : (0:ℝ) < 1 + (N : ℝ) / (C * B) := by linarith
-    have hfrac_le_half : 1 / (1 + (N : ℝ) / (C * B)) ≤ 1 / 2 := by
+    have hdenom_pos : (0:ℝ) < 1 + (N : ℝ) / (C * B ^ 2) := by linarith
+    have hfrac_le_half : 1 / (1 + (N : ℝ) / (C * B ^ 2)) ≤ 1 / 2 := by
       rw [div_le_div_iff₀ hdenom_pos (by norm_num : (0:ℝ) < 2)]
       nlinarith
     linarith
