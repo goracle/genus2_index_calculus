@@ -552,3 +552,61 @@ theorem hitRate_of_goodMatch (T : Finset G) (hSidon : SidonRepBound T) (hT : 0 <
   have hKpos : 0 < 2 * T.card ^ 2 := by positivity
   apply hitRate_of_good_overlap T hSidon (goodMatch T) (2 * T.card ^ 2) badMass
     hKpos (goodMatch_overlap_cap T hSidon) hbad hhalf
+
+/-! ## Part 5: bounding `hbad`, per-piece (external input, this pass)
+
+An external check (ChatGPT, asked exactly for a bound on
+`hbad = ∑_{Δ ∈ DirectRelation} matchCount T Δ`) gave a decisive answer:
+
+* **`SidonRepBound` alone gives NO bound on `hbad`, not even `o(B⁴)`.**
+  Explicit counterexample: `T = {(t, t²) : t ∈ 𝔽_q}` (a parabola) has
+  `repCount T ≤ 2` (Sidon: `x+y=u+v ∧ x²+y²=u²+v² ⟹ xy=uv ⟹ {x,y}={u,v}`,
+  since `x,y` and `u,v` are then roots of the same quadratic) but
+  `T - T = 𝔽_q² ∖ {(0,k) : k ≠ 0}` (every `(h,k)` with `h ≠ 0` is `(x,x²) -
+  (y,y²)` for `x = (k/h+h)/2, y = (k/h-h)/2`), missing only `B - 1` points
+  out of `|G| ≥ B⁴`-scale mass, forcing `∑_{Δ ∈ T-T} matchCount T Δ ≥ B⁴ -
+  2B³ + 2B²` — essentially ALL of the total mass `B⁴`. This holds at the
+  model's own scaling (`|G| ≍ B⁵`, matching `B ~ p^(2/5)`, `|G| ~ p²`) by
+  embedding the parabola in a coordinate subgroup. So the `T - T` piece
+  genuinely needs an extra hypothesis; no argument from `SidonRepBound`
+  alone (elementary or otherwise) can bound it.
+* **A clean sufficient hypothesis exists:** `E₃⁺(T) := #{(a,b,c,a',b',c') ∈
+  T⁶ : a+b+c = a'+b'+c'} ≤ K · T.card³` for a constant `K` (`ThirdEnergyBound`
+  below) gives `hbad ≤ 2(K+1) · T.card³`, via three separate pieces:
+  - `T` piece: `∑_{Δ∈T} matchCount T Δ ≤ 2 · T.card³` — fully elementary,
+    Sidon alone, no `E₃⁺` needed (`matchCount_le_two_card_sq` summed over
+    `T`). Formalized below (`sum_matchCount_T_le`).
+  - `T - T` piece: `h₋ ≤ E₃⁺(T) ≤ K · T.card³` via the sandwich `h₋ ≤ E₃⁺(T)
+    ≤ B · matchCount T 0 + 2h₋`, using the exact rearrangement identity
+    `E₃⁺(T) = ∑_δ r_{T-T}(δ) · matchCount T δ` (`a+b+c=a'+b'+c' ⟺
+    a+b-a'-b' = c'-c`, grouped by `δ := c'-c`) and the Sidon fact
+    `r_{T-T}(δ) ≤ 2` for `δ ≠ 0` (if `x-y=u-v=δ≠0` then `x+v=u+y`, so two
+    distinct difference-representations give two distinct sum-representations,
+    capped by `repCount ≤ 2`). **Not yet formalized below** — the sandwich
+    needs `E₃⁺` and `r_{T-T}` defined first; left for a follow-up pass.
+  - `T + T` piece: `h₊ ≤ E₃⁺(T)` as well, but the only proof found needs
+    Parseval/Plancherel on the finite-abelian dual group (`matchCount = r *
+    r̃` in Fourier, `|∑_δ r(δ)·matchCount(δ)| ≤ ∑_χ |f̂(χ)|⁶`). Checked (this
+    session, by direct combinatorial expansion of `∑_δ r_{T+T}(δ)·matchCount
+    T δ`) that this does NOT reduce to an elementary identity — the direct
+    expansion computes a different, genuinely 4-vs-2 energy, not `E₃⁺`. So
+    Fourier appears load-bearing for this one piece. **Not attempted here**;
+    needs Mathlib's finite-abelian Fourier API
+    (`Mathlib/Analysis/Fourier/FiniteAbelian/`), unused elsewhere in this
+    project. See `ROADMAP-current.md` open item 1 for the decision on how to
+    proceed (attempt it, ask for an elementary substitute, or accept a
+    partial theorem covering only the `T` and `T - T` pieces).
+
+This part formalizes only the `T` piece, the one fully elementary, ready
+piece with no new hypothesis and no new Mathlib area. -/
+
+/-- **The `T` piece of `hbad` is `O(B³)`, unconditionally under `SidonRepBound`
+alone.** No `E₃⁺` hypothesis needed: `matchCount T Δ ≤ 2 · T.card²` at every
+`Δ` (`matchCount_le_two_card_sq`), summed over the `T.card` elements of `T`. -/
+theorem sum_matchCount_T_le (T : Finset G) (hSidon : SidonRepBound T) :
+    ∑ Δ ∈ T, matchCount T Δ ≤ 2 * T.card ^ 3 := by
+  calc ∑ Δ ∈ T, matchCount T Δ
+      ≤ ∑ Δ ∈ T, 2 * T.card ^ 2 :=
+        Finset.sum_le_sum (fun Δ _ => matchCount_le_two_card_sq T hSidon Δ)
+    _ = T.card * (2 * T.card ^ 2) := by rw [Finset.sum_const, smul_eq_mul]
+    _ = 2 * T.card ^ 3 := by ring

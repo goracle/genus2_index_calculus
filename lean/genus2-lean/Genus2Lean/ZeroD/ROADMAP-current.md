@@ -39,21 +39,52 @@ no draw is made on the reduce equation. So the matching regime only ever sees
 
 ## Open, in order of importance
 
-1. **`HitRate` for the real factor base — `good` now pinned down; `hbad` is the
-   remaining gap.** `HitRateSumsetReduction` Part 4 (this pass) defines
-   `DirectRelation T Δ := (Δ ∈ T-T) ∨ (Δ ∈ T) ∨ (Δ ∈ T+T)` (as existentials,
-   project convention) and `goodMatch T := ¬ DirectRelation T`, matching the
-   stated model exactly. `goodMatch_overlap_cap` discharges the overlap-cap
-   input for free (Part 3's `overlap_le_sidon_energy` is unconditional in
-   `Δ`), and `hitRate_of_goodMatch` packages the whole thing, so the ONLY
-   remaining input is `hbad`: a bound on `∑_{Δ ∈ DirectRelation} matchCount T Δ`
-   (now honestly three pieces — `T-T`, `T`, `T+T` — not just the `T-T` energy
-   discussed in Part 2's "What this does NOT prove"). Still not supplied by
-   anything on file; still needs either the third-additive-energy bound on
-   `T-T` already flagged, or a fresh argument for the `T` and `T+T` pieces
-   (heuristically smaller, `~B` and `~B²` against a `B⁴/2` budget, but
-   unproved). Restating the whole thing as the random-`(U,V)` count `~B⁴/p²`
-   is still open too.
+1. **`HitRate` for the real factor base — decisive answer from ChatGPT this
+   pass.** Full result, to be formalized:
+   - **NEGATIVE, sharp:** Sidon alone gives NO bound on `hbad`, not even
+     `o(B⁴)`. Explicit counterexample: `T = {(t,t²) : t ∈ 𝔽_q}` (a parabola)
+     is Sidon (`repCount ≤ 2`, elementary quadratic-roots argument) but has
+     `T - T = 𝔽_q² ∖ {(0,k) : k≠0}`, missing only `B-1` points, forcing
+     `hbad ≥ B⁴ - 2B³ + 2B²` — i.e. `(1-o(1))` of the ENTIRE mass `B⁴` can
+     sit on `T-T` alone. Holds even embedded in a bigger ambient group at the
+     model's own scaling `|G| ≍ B⁵`. So Part 2's "what this does not prove"
+     was right to flag this as open, but understated how bad it is: no
+     Sidon-only fix exists, full stop.
+   - **POSITIVE, conditional:** new hypothesis `(H3): E₃⁺(T) ≤ K·B³` where
+     `E₃⁺(T) = #{(a,b,c,a',b',c') ∈ T⁶ : a+b+c = a'+b'+c'}` (three-fold
+     additive energy) gives `hbad ≤ 2(K+1)·B³`, comfortably under `B⁴/2` for
+     `B` large. Proof, per-piece:
+     - `T` piece: `∑_{Δ∈T} matchCount(Δ) ≤ B · 2B² = 2B³` — fully elementary,
+       Sidon-only (`matchCount ≤ 2B²` everywhere, already on file as
+       `matchCount_le_two_card_sq`/`overlap_le_sidon_energy`'s upstream
+       fact), no `(H3)` needed. **Ready to formalize now, no new machinery.**
+     - `T-T` piece: `h₋ ≤ E₃⁺(T) ≤ K·B³` via a sandwich `h₋ ≤ E₃⁺(T) ≤
+       B·matchCount(0) + 2h₋` (elementary rearrangement identity plus the
+       Sidon fact `r_{T-T}(δ) ≤ 2` for `δ≠0`, itself a short elementary
+       argument from `repCount ≤ 2`). **Ready to formalize, no new
+       machinery** — the sandwich and the `r_{T-T}(δ)≤2` fact are both
+       elementary `Finset`/counting arguments.
+     - `T+T` piece: `h₊ ≤ E₃⁺(T) ≤ K·B³` — but the only proof found needs
+       Parseval/Plancherel on the finite abelian dual group (`f=𝟙_T`,
+       `matchCount = r * r̃` in Fourier, `|∑_δ r(δ)matchCount(δ)| ≤
+       ∑_χ|f̂(χ)|⁶ = N·E₃⁺(T)`). Confirmed (by direct combinatorial
+       expansion, this session) that this does NOT reduce to an elementary
+       identity — it computes a genuinely different 4-vs-2 energy, not
+       `E₃⁺`, so Fourier appears to be load-bearing here, not just the
+       first proof found. **Needs Mathlib's finite-abelian-group Fourier
+       API** (`AddChar`, Pontryagin duality — see
+       `Mathlib/Analysis/Fourier/FiniteAbelian/PontryaginDuality.lean` and
+       neighboring files), which nothing else in this project uses yet.
+       Bigger lift; decide separately whether to attempt it, ask ChatGPT for
+       a from-scratch elementary substitute (possibly with a worse
+       constant), or accept a weaker/partial theorem that only covers the
+       `T` and `T-T` pieces plus an explicit hypothesis absorbing `T+T`.
+   - `(H3)` itself is not proved for `T = s(F)`; two candidate sufficient
+     conditions given (not yet assessed against this project): `B₃`-ness of
+     `T` (strong, `E₃⁺≤6B³` trivially, `K=6`), or Fourier-bias smallness
+     `λ ≤ C√B` combined with `|G| ≳ B³` (weaker, more plausible for a
+     genuinely random-looking factor base, but itself unproved for `s(F)`).
+   - Restating as the random-`(U,V)` count `~B⁴/p²` is still separately open.
 2. **`SidonRepBound T` for the actual `T = s(F)`** is an explicit hypothesis
    everywhere it is used.
 3. **`IndexCalculusReachability`'s `SolverReaches` takes `|Sol Δ| ≤ d`.**
