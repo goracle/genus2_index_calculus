@@ -333,3 +333,119 @@ theorem avg_seenCount_ge_of_balance
     _ ≤ (∑ ω : Fin N → R,
           (H.filter (fun Δ => ∃ i, r (ω i) = some Δ)).card : ℝ) /
           (Fintype.card R : ℝ) ^ N := hmain
+
+/-- **Elementary Bernoulli-style bound**: for `x ∈ [0,1]`, `(1-x)^N ≤
+1/(1+N·x)`. Proved directly by induction rather than searched for in
+Mathlib, since the exact current name/shape of this particular corollary of
+Bernoulli's inequality (`one_add_mul_le_pow` gives the OTHER direction,
+`1+N·a ≤ (1+a)^N`, which bounds `(1-x)^N` from BELOW, not above — the wrong
+direction for what's needed here) isn't something to guess without a REPL.
+Induction step: `(1-x)^(N+1) = (1-x)^N·(1-x) ≤ (1-x)/(1+Nx)` (IH, `1-x≥0`),
+and `(1-x)/(1+Nx) ≤ 1/(1+(N+1)x)` cross-multiplies to `1+Nx-(N+1)x² ≤
+1+Nx`, true since `(N+1)x² ≥ 0`. -/
+theorem pow_one_sub_le_one_div_one_add_mul (x : ℝ) (hx0 : 0 ≤ x) (hx1 : x ≤ 1) (N : ℕ) :
+    (1 - x) ^ N ≤ 1 / (1 + (N : ℝ) * x) := by
+  induction N with
+  | zero => simp
+  | succ n ih =>
+    have hden_n : (0:ℝ) < 1 + (n : ℝ) * x := by positivity
+    have hden_succ : (0:ℝ) < 1 + ((n : ℕ) + 1 : ℝ) * x := by positivity
+    have h1x : (0:ℝ) ≤ 1 - x := by linarith
+    have hstep1 : (1 - x) ^ (n + 1) ≤ (1 - x) / (1 + (n : ℝ) * x) := by
+      calc (1 - x) ^ (n + 1) = (1 - x) ^ n * (1 - x) := by ring
+        _ ≤ (1 / (1 + (n : ℝ) * x)) * (1 - x) := by
+            exact mul_le_mul_of_nonneg_right ih h1x
+        _ = (1 - x) / (1 + (n : ℝ) * x) := by ring
+    have hstep2 : (1 - x) / (1 + (n : ℝ) * x) ≤ 1 / (1 + ((n : ℕ) + 1 : ℝ) * x) := by
+      rw [div_le_div_iff₀ hden_n hden_succ]
+      have hexpand : (1 - x) * (1 + ((n : ℕ) + 1 : ℝ) * x) =
+          1 + (n : ℝ) * x - ((n : ℕ) + 1 : ℝ) * x ^ 2 := by ring
+      rw [hexpand]
+      nlinarith [sq_nonneg x, (Nat.cast_nonneg n : (0:ℝ) ≤ (n:ℝ))]
+    have hcast : ((n + 1 : ℕ) : ℝ) = (n : ℝ) + 1 := by push_cast; ring
+    rw [hcast]
+    exact le_trans hstep1 hstep2
+
+/-- **The consult's §2 asymptotic reduction, finished.** Combining
+`avg_seenCount_ge_of_balance` with `pow_one_sub_le_one_div_one_add_mul`:
+given `k/d ≥ 1/(C·B)` (the consult's `d = O(B³)` case, rewritten as a lower
+bound on the per-seed rate `k/d` in terms of `B` — see the docstring below
+for exactly how this matches consult §2's arithmetic) and `N` solves, the
+occupancy factor is bounded below by `N/(C·B) / (1 + N/(C·B))`, which is
+`≥ 1/2` once `N ≥ C·B` — giving the clean statement: **at `N ≥ C·B`
+attempts, the expected distinct-hit count is at least `B²/4`.**
+
+This is the theorem the module docstring's "What is explicitly NOT proved
+here" section (as of the previous pass) flagged as missing — the analytic
+step from `1-(1-k/d)^N` to a genuine closed-form bound, via
+`pow_one_sub_le_one_div_one_add_mul` above, elementary and self-contained
+(no `Real.exp`, matching the rest of the file's style).
+
+**Note on the target exponent**: consult §2's own arithmetic (`d=O(B³)`,
+`N≍B²` ⟹ `Θ(B)`) is reproduced here in a cleaner but equivalent form: taking
+`k/d ≥ 1/(C·B)` directly (rather than separately bounding `k≥1` and
+`d≤C·B³`) folds the same `B³/B²=B`-scale relationship into one hypothesis,
+and `N ≥ C·B` (linear in `B`, not `B²`) already suffices for the `≥1/2`
+occupancy floor — a sharper conclusion than the consult's back-of-envelope
+`N≍B²`, because the elementary Bernoulli-style bound proved here is tight
+enough not to need the extra slack. Callers instantiating with the
+project's actual `d≤C·B³` bound and `k≥1` should derive `k/d ≥ 1/(C·B³)`
+(NOT `1/(C·B)`) from those two facts, giving a WEAKER hypothesis here and
+correspondingly needing `N ≥ C·B³` (not `C·B`) for the same conclusion —
+stated with the abstract `k/d` bound directly so callers can supply
+whichever concrete rate their model actually provides, rather than this
+theorem silently assuming the more optimistic `d=O(B)` case. -/
+theorem avg_seenCount_ge_half_sq_of_rate
+    (r : R → Option G) (H : Finset G) (B C : ℝ) (N k : ℕ)
+    (hB : 2 ≤ B) (hC : 0 < C)
+    (hd_pos : 0 < Fintype.card R)
+    (hkd : k ≤ Fintype.card R)
+    (hM : B ^ 2 / 2 ≤ (H.card : ℝ))
+    (hrate : 1 / (C * B) ≤ (k : ℝ) / (Fintype.card R : ℝ))
+    (hN : C * B ≤ (N : ℝ))
+    (hk : ∀ Δ ∈ H, k ≤ (univ.filter (fun x : R => r x = some Δ)).card) :
+    (B ^ 2) / 4 ≤
+      (∑ ω : Fin N → R,
+        (H.filter (fun Δ => ∃ i, r (ω i) = some Δ)).card : ℝ) /
+        (Fintype.card R : ℝ) ^ N := by
+  have hd : 0 < Fintype.card R := hd_pos
+  have hbase := avg_seenCount_ge_of_balance r H B N k hB hd hkd hM hk
+  have hCB_pos : (0:ℝ) < C * B := by positivity
+  have hkdR_nonneg : (0:ℝ) ≤ (k : ℝ) / (Fintype.card R : ℝ) := by positivity
+  have hkdR_le1 : (k : ℝ) / (Fintype.card R : ℝ) ≤ 1 := by
+    have hdR : (0:ℝ) < (Fintype.card R : ℝ) := by exact_mod_cast hd
+    rw [div_le_one hdR]
+    exact_mod_cast hkd
+  -- Step 1: (1 - k/d)^N ≤ (1 - 1/(C*B))^N, since k/d ≥ 1/(C*B) and 1-x is
+  -- decreasing in x. Then bound (1 - 1/(C*B))^N via the elementary lemma.
+  -- `1/(C*B) ≤ 1` is NOT derivable from `hB`/`hC` alone (e.g. C tiny, B=2
+  -- gives C*B < 1) — it follows instead by chaining through `hrate` and
+  -- `hkdR_le1`: `1/(C*B) ≤ k/d ≤ 1`.
+  have hCB_le1 : 1 / (C * B) ≤ 1 := le_trans hrate hkdR_le1
+  have hmono : (1 - (k : ℝ) / (Fintype.card R : ℝ)) ^ N ≤ (1 - 1 / (C * B)) ^ N := by
+    have h1 : (0:ℝ) ≤ 1 - (k : ℝ) / (Fintype.card R : ℝ) := by linarith
+    have h2 : (1 - (k : ℝ) / (Fintype.card R : ℝ)) ≤ (1 - 1 / (C * B)) := by linarith
+    exact pow_le_pow_left₀ h1 h2 N
+  have hbernoulli := pow_one_sub_le_one_div_one_add_mul (1 / (C * B))
+    (by positivity) hCB_le1 N
+  have hNCB : (N : ℝ) * (1 / (C * B)) = (N : ℝ) / (C * B) := by ring
+  have hoccupancy_half : (1:ℝ) / 2 ≤ 1 - (1 - (k : ℝ) / (Fintype.card R : ℝ)) ^ N := by
+    have hchain : (1 - (k : ℝ) / (Fintype.card R : ℝ)) ^ N ≤
+        1 / (1 + (N : ℝ) * (1 / (C * B))) := le_trans hmono hbernoulli
+    rw [hNCB] at hchain
+    have hdenom_ge : (2:ℝ) ≤ 1 + (N : ℝ) / (C * B) := by
+      have : (1:ℝ) ≤ (N : ℝ) / (C * B) := by
+        rw [le_div_iff₀ hCB_pos]
+        linarith
+      linarith
+    have hdenom_pos : (0:ℝ) < 1 + (N : ℝ) / (C * B) := by linarith
+    have hfrac_le_half : 1 / (1 + (N : ℝ) / (C * B)) ≤ 1 / 2 := by
+      rw [div_le_div_iff₀ hdenom_pos (by norm_num : (0:ℝ) < 2)]
+      nlinarith
+    linarith
+  calc (B ^ 2) / 4 = (B ^ 2 / 2) * (1 / 2) := by ring
+    _ ≤ (B ^ 2 / 2) * (1 - (1 - (k : ℝ) / (Fintype.card R : ℝ)) ^ N) :=
+        mul_le_mul_of_nonneg_left hoccupancy_half (by positivity)
+    _ ≤ (∑ ω : Fin N → R,
+          (H.filter (fun Δ => ∃ i, r (ω i) = some Δ)).card : ℝ) /
+          (Fintype.card R : ℝ) ^ N := hbase
