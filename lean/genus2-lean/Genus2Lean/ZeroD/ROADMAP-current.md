@@ -116,32 +116,59 @@ no draw is made on the reduce equation. So the matching regime only ever sees
 
 | File | What it gives |
 |---|---|
-| `ZeroD/FixedTargetBoundCanonical` | `≤ 4` fixed-target bound for the canonical `D`, with `hbridge` and `IsOnlyEffectiveInClass` discharged. Needs `hchar`, `hsf`, and non-involution pairs (`P2 ≠ ι P1`); FALSE without the last. |
+| `ZeroD/FixedTargetBoundCanonical` | `≤ 4` fixed-target bound for the canonical `D`, with `hbridge` and `IsOnlyEffectiveInClass` discharged. Needs `hchar`, `hsf`, and non-involution pairs (`P2 ≠ ι P1`); FALSE without the last. **This pass:** the non-involution fact is now a required field (`.hne`) of `SampleTargetFromAlpha` itself (`AlphaLocusDegreeUniform.lean`) rather than a separately-threaded caller hypothesis — no `SampleTargetFromAlpha` can be built without it. Resolves open item 2 below. |
 | `ZeroD/InvolutionPairsCount` | involution pairs are exactly `#H.Point` of `#H.Point²`: rejecting them costs a factor `1 - 1/#Points`. (`#Points ~ p` is Hasse–Weil, not on file.) |
 | `IndexCalculusRelations` | a solve's relation has `rhs = (α-α')·a`; two solves are gauge-related iff same `rhs`; `DistinctRHS` excludes all gauge duplicates. |
 | `IndexCalculusComplexity` | balance `B ~ p^(2/5)`, cost `p^(4/5)` from a named per-solve rate `hRate = B⁴/p²`. |
 | `IndexCalculusHitRate` | **Superseded, this pass** — see correction (1) above. `hRate` made explicit as `HitRate F c` with sufficient conditions, but disconnected from the live proof graph: `IndexCalculusComplexity`'s actual result doesn't route through it. |
 | `HitRateSumsetReduction` | **Downstream of the superseded branch, this pass** — see correction (1) above. Content kept for reference: (1) NEGATIVE: no constant cap `matchCount T Δ ≤ K` at `Δ ≠ 0`. (2) POSITIVE: `matchCount ≤ 4·overlap(T+T)` under `SidonRepBound`. (3) `overlap(Δ) ≤ 2B²` unconditionally. (4)–(5) `goodMatch`/`DirectRelation`/`hbad` 3-piece split, `T`-piece proved, `T-T`/`T+T` pieces open — moot per the correction, not pursued further. |
-| `SidonDichotomyGeneral` | **Proved, `sorry`-free, this pass** — see correction (2) above. `sidonRepBound_of_sidonDichotomy_nonInvolution_general`: `SidonRepBound (sidonSet (principalDivisorData H hdeg) δ₀ F)` for the real `T = s(F)`, general `k`, from `hchar`/`hsf`/`AvoidsInvolutionPairs F`/`NoWeierstrassPoints F` only — sidesteps the one open `sorry` (`sidonDichotomy_general`'s involution branch) by construction. Stranded off the live path, same as `IndexCalculusHitRate` above. |
+| `SidonDichotomyGeneral` | **Proved, `sorry`-free.** `sidonRepBound_of_sidonDichotomy_nonInvolution_general`: `SidonRepBound (sidonSet (principalDivisorData H hdeg) δ₀ F)` for the real `T = s(F)`, general `k`, from `hchar`/`hsf`/`AvoidsInvolutionPairs F`/`NoWeierstrassPoints F` only. Also carries `hitCount_ge_of_sidonDichotomy_nonInvolution_general`: `≥ B²/2` distinct relations, unconditional, real curve. **No longer purely stranded — this pass**, see `IndexCalculusComplexityRealHitCount` below. |
+| `IndexCalculusComplexityRealHitCount` | **New, this pass.** Chains `SidonDichotomyGeneral`'s `hitCount_ge_of_sidonDichotomy_nonInvolution_general` (`≥ B²/2` distinct relations, real curve, unconditional) into `IndexCalculusComplexity`'s balance point `B⁵=p²`: at that balance, the real curve's existence guarantee (`B²/2`) already covers the `~B` relations the model calls for, with room to spare. Settles, for the actual curve, the "which fiber-cap instantiation" question `IndexCalculusComplexity`'s own docstring had left as an unmade modeling choice. Does NOT close the reachability gap (below) — this is a static existence fact over the whole `B⁴`-quadruple space, not a statement about `N` solve attempts. |
 | `ZeroD/GaugeOrbitMatchCountBound` | earlier "gauge orbit = swapImages" claim was false; honest replacement: the `Δ`-fiber is a union over pair-sum classes of `≤4` fibers. |
 | `ZeroD/AlphaUnionGaugeCollapse` | any second sample with the same `α-α'` is gauge-accounted for by the reference `≤4` fiber. |
 
 ## Open, in order of importance
 
 1. **`IndexCalculusReachability`'s `SolverReaches` takes `|Sol Δ| ≤ d`.**
-   *(read)* By `GaugeOrbitMatchCountBound` the full `Δ`-fiber is a union of
-   `≤4` fibers over ~`p²` divisors `(U,V)`; the `≤4` is per `(U,V)`, not per
-   `Δ`. Decide whether that file's model should be restated per-`(U,V)`.
-2. **Sampler must reject `P2 = ι P1`** (cost quantified above); nothing on
-   file enforces it.
-3. **Gauge-shift branch** (`CantorCompositionStep`, `CantorMulMumford`,
-   `AlphaReducedClassShift`, `GaugeShiftAssembly`): built to support a
-   shift-then-reduce argument for the pointwise `matchCount ≤ K` target, which
-   `HitRateSumsetReduction` Part 1 closes as unviable. *(read)* Probably no
-   longer on the critical path; `CantorMulMumford` still carries the
-   `CantorAddWitness` existence hypothesis. Confirm before archiving. Same
-   status as `IndexCalculusHitRate`/`HitRateSumsetReduction` (superseded,
-   above) — worth archiving both branches together in one pass.
+   *(read, confirmed this pass — not actionable without new modeling
+   decisions.)* `matchCount`/`SolverReaches`/`Sol Δ` live in the abstract
+   group model (`G`/`Finset G`/`AverageComplexity.lean`); `Sol Δ` itself
+   is never a defined term anywhere, just prose motivating `SolverReaches`
+   as a hypothesis. `GaugeOrbitMatchCountBound`'s pair-sum-class
+   decomposition lives entirely at the `H.Point`/`Jacobian H D` level,
+   with no notion of a factor base `F` or per-solve probability `q` at
+   all. The two files share no common object to restate the bound in
+   terms of — bridging them means inventing new model glue (how factor-
+   base membership in `G` corresponds to pair-sum classes over
+   `H.Point`), not discharging an existing proof obligation. Left as is.
+2. **Reachability/sampling gap: turning "relations exist" into "a solver
+   finds them."** `IndexCalculusComplexityRealHitCount` (new, this pass)
+   establishes that at the balance point `B⁵=p²`, at least `B²/2` distinct
+   relations genuinely exist for the real curve, unconditionally — matching
+   the `~B²` exponent the balance needs, not just the weaker unconditional
+   `~B` bound. What is NOT established: that `N ~ B²` solve *attempts* (a
+   randomized search over the whole group, one candidate returned per
+   attempt, checked afterward for factor-base membership) actually finds
+   `~B` of those relations. This is a coupon-collector-style claim needing
+   genuine expectation/probability machinery (indicator variables, linearity
+   of expectation) that nothing in this project has ever used — no `PMF`,
+   `MeasureTheory`, or `ProbabilityTheory` import anywhere in the codebase;
+   the project's existing "probability" results (`PaleyZygmund.lean`,
+   `HitRateSumsetReduction.lean`) are all finite-combinatorics second-moment
+   arguments in disguise, not measure-theoretic ones. **Sent to ChatGPT
+   this pass** for a scoping verdict: whether a finite-combinatorics
+   coupon-collector argument avoiding `PMF`/`MeasureTheory` entirely is
+   viable, or what minimal slice of Mathlib's probability API would be
+   needed, or whether a deterministic worst-case reformulation sidesteps
+   the need for expectation machinery altogether. Awaiting Claire's
+   response back from that consult before attempting any Lean.
+
+*(Former item 2, "sampler must reject `P2 = ι P1`": resolved, this pass —
+`SampleTargetFromAlpha` now carries the non-involution fact as a required
+field, see the `Proved` table above.)*
+
+*(Former gauge-shift-branch item: dropped from this list per Claire's
+instruction — worth noting, not worth archiving. No longer tracked here.)*
 
 *(Former item 1, `SidonRepBound T` for the real `T = s(F)`: resolved, see
 correction (2) above — proved, not open, just stranded off the live path.)*
@@ -166,7 +193,14 @@ modules are in the import closure of the 13 files below.
 Importing a file with a `sorry` is not depending on it: to check the headline
 result, run `#print axioms` on `fixedTargetSolutions_ncard_le_four_canonical`
 and look for `sorryAx`. (`hitRate_of_good_overlap` dropped from this check —
-superseded, see correction above; not a headline result.)
+superseded, see correction above; not a headline result.) Same check is
+worth running on `index_calculus_complexity_real_hitCount`
+(`IndexCalculusComplexityRealHitCount.lean`, new this pass) — it imports
+`SidonDichotomyGeneral`, which carries `sidonDichotomy_general`'s live
+`sorry` in an unrelated declaration; the theorems it actually calls
+(`hitCount_ge_of_sidonDichotomy_nonInvolution_general` and its dependents)
+were already `sorry`-free per the inventory above, so this should come back
+clean, but hasn't been explicitly `#print axioms`-checked yet.
 
 ## Files this map is built from (oldest to newest)
 
@@ -175,6 +209,14 @@ superseded, see correction above; not a headline result.)
 `AlphaReducedClassShift`, `CantorMulMumford`, `GaugeShiftAssembly`,
 `IndexCalculusHitRate`, `IndexCalculusReachability`,
 `ZeroD/FixedTargetBoundCanonical`, `ZeroD/InvolutionPairsCount`,
-`HitRateSumsetReduction`. Plus, read this pass while chasing item 1
-(now resolved, correction (2) above): `SidonDichotomyGeneral`,
+`HitRateSumsetReduction`. Plus, read a previous pass while chasing item 1
+(resolved, correction (2) above): `SidonDichotomyGeneral`,
 `SidonBridge`, `FFKSidon`, `DivisorClassGroup`.
+
+**Updated 2026-09-22**: `ZeroD/AlphaLocusDegreeUniform`
+(`SampleTargetFromAlpha`'s new `.hne` field),
+`ZeroD/SampleTargetFromAlphaWitness` (threading `.hne` through the one real
+constructor) — both REPL-confirmed green. Plus the new file
+`IndexCalculusComplexityRealHitCount` (chaining `SidonDichotomyGeneral`'s
+hit-count bound into `IndexCalculusComplexity`'s balance point),
+REPL-confirmed green.
