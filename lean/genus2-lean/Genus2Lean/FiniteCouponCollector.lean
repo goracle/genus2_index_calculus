@@ -57,9 +57,24 @@ for it now — this file follows that recommendation.
   `M · (d^N - (d-k)^N)` on the total mass — the finite-cardinality analogue
   of `𝔼[X_N] ≥ M(1-(1-k/d)^N)` from the consult's eq (1)/(2), stated without
   dividing by `d^N` (so it is an exact `ℕ`-inequality, not a probability).
+* `avg_seenCount_ge`: the genuine real-valued average, dividing
+  `sum_card_hit_ge` through by `d^N` — `𝔼[X_N] ≥ M(1-(1-k/d)^N)` exactly as
+  the consult's eq (1)/(2) states it.
+* `avg_seenCount_ge_of_balance`: `avg_seenCount_ge` with `M` substituted by
+  `IndexCalculusComplexityRealHitCount`'s guarantee `M ≥ B²/2` — real-algebra
+  plumbing only, no new combinatorial content. Does NOT yet reduce the
+  occupancy factor `1-(1-k/d)^N` to the consult's clean `Θ(1/B)` asymptotic
+  form (see that theorem's own docstring for exactly what remains).
 
 ## What is explicitly NOT proved here (left for whoever wires this up)
 
+* The consult §2 asymptotic reduction itself: turning `1-(1-k/d)^N` into a
+  clean `Θ(1/B)` factor given `d = O(B³)` and `N ≍ B²` needs an actual
+  analytic inequality (Bernoulli's `(1-x)^N ≤ 1/(1+Nx)`, or `1-x ≤ e^{-x}`
+  plus `Real.exp` machinery) — genuinely more work than algebra alone, not
+  attempted here; an earlier draft of `avg_seenCount_ge_of_balance` briefly
+  carried unused `d ≤ C·B³`/`N`-scale hypotheses that implied this reduction
+  without actually proving it — corrected to only claim what is proved.
 * The variance/Chebyshev high-probability strengthening (consult §3) —
   noted as available, not built, since the expectation-level bound alone
   already matches what `IndexCalculusComplexity.lean`'s balance needs
@@ -262,3 +277,59 @@ theorem avg_seenCount_ge
     exact hnatR
   rw [le_div_iff₀ hdRpow]
   exact hkey
+
+/-- **`avg_seenCount_ge` specialized to `M = B²/2`.** Directly substitutes
+`IndexCalculusComplexityRealHitCount`'s guarantee (`M ≥ B²/2` reachable
+target labels) into `avg_seenCount_ge`'s conclusion, using only that `M ≥
+B²/2` and that the occupancy factor `1 - (1-k/d)^N` is nonnegative (so
+scaling `M` down to `B²/2` only weakens the bound). This is real-algebra
+plumbing only — no new combinatorial content beyond `avg_seenCount_ge`.
+
+**What this does NOT do (important, do not overclaim):** it does NOT yet
+derive the consult's §2 clean asymptotic form `Θ(B)`. That reduction needs
+`d = O(B³)` and `N ≍ B²` to turn `1 - (1-k/d)^N` into a genuine `Θ(1/B)`
+factor — which needs an actual analytic bound (e.g. Bernoulli's inequality
+`(1-x)^N ≤ 1/(1+Nx)`, or `1-x ≤ e^{-x}` plus `exp` machinery) to extract a
+clean lower bound on `1 - (1-k/d)^N` from `d ≤ C·B³` and `N ≥ B²` — genuinely
+more work, not attempted here, and easy to get wrong without a REPL. Stating
+that theorem with unused `d`/`N`/`C` hypotheses (as an earlier draft of this
+theorem briefly did) would silently overclaim what's actually proved; this
+version only takes the hypotheses it uses.
+
+**Wiring status, honestly stated**: `M`, `d`, `k`, `N` here are still bare
+naturals/reals, not yet `H.Point`/`Jacobian H D`-level quantities. Per the
+module docstring and `ROADMAP-current.md` open item 1, that wiring — showing
+`IndexCalculusReachability.lean`'s `SolverReaches` actually forces `d = O(B³)`
+for the real sampler — is confirmed not actionable without new modeling
+decisions and is NOT attempted here. -/
+theorem avg_seenCount_ge_of_balance
+    (r : R → Option G) (H : Finset G) (B : ℝ) (N k : ℕ)
+    (hB : 2 ≤ B)
+    (hd_pos : 0 < Fintype.card R)
+    (hkd : k ≤ Fintype.card R)
+    (hM : B ^ 2 / 2 ≤ (H.card : ℝ))
+    (hk : ∀ Δ ∈ H, k ≤ (univ.filter (fun x : R => r x = some Δ)).card) :
+    (B ^ 2 / 2) * (1 - (1 - (k : ℝ) / (Fintype.card R : ℝ)) ^ N) ≤
+      (∑ ω : Fin N → R,
+        (H.filter (fun Δ => ∃ i, r (ω i) = some Δ)).card : ℝ) /
+        (Fintype.card R : ℝ) ^ N := by
+  have hd : 0 < Fintype.card R := hd_pos
+  have hmain := avg_seenCount_ge r H N k hd hkd hk
+  have hdR : (0 : ℝ) < (Fintype.card R : ℝ) := by exact_mod_cast hd
+  have hoccupancy_nonneg : (0 : ℝ) ≤ 1 - (1 - (k : ℝ) / (Fintype.card R : ℝ)) ^ N := by
+    have hkR : (0:ℝ) ≤ (k : ℝ) / (Fintype.card R : ℝ) := by positivity
+    have hkR_le1 : (k : ℝ) / (Fintype.card R : ℝ) ≤ 1 := by
+      rw [div_le_one hdR]
+      exact_mod_cast hkd
+    have h1 : (0:ℝ) ≤ 1 - (k : ℝ) / (Fintype.card R : ℝ) := by linarith
+    have h2 : (1 - (k : ℝ) / (Fintype.card R : ℝ)) ≤ 1 := by linarith
+    have h3 : (1 - (k : ℝ) / (Fintype.card R : ℝ)) ^ N ≤ 1 ^ N :=
+      pow_le_pow_left₀ h1 h2 N
+    simp at h3
+    linarith
+  calc (B ^ 2 / 2) * (1 - (1 - (k : ℝ) / (Fintype.card R : ℝ)) ^ N)
+      ≤ (H.card : ℝ) * (1 - (1 - (k : ℝ) / (Fintype.card R : ℝ)) ^ N) :=
+        mul_le_mul_of_nonneg_right hM hoccupancy_nonneg
+    _ ≤ (∑ ω : Fin N → R,
+          (H.filter (fun Δ => ∃ i, r (ω i) = some Δ)).card : ℝ) /
+          (Fintype.card R : ℝ) ^ N := hmain
